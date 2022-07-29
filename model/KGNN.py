@@ -66,48 +66,51 @@ class KGNN(nn.Module):
         feature, aspect, offset, adj, mask = feature.long(), aspect.long(), offset, adj.float(), mask.long()
         text_len = torch.sum(feature != 0, dim=-1).cpu()
         aspect_len = torch.sum(aspect != 0, dim=-1).cpu()
-        text = self.embed(feature)
-        text = self.location_feature(text, offset)
-        text = self.text_embed_dropout(text)
+        text = self.embed(feature) #torch.Size([64, 84, 300])
+        text = self.location_feature(text, offset) #torch.Size([64, 84, 300])
+        text = self.text_embed_dropout(text) #torch.Size([64, 84, 300])
         aspect_embed =self.embed(aspect)
         aspect_embed = self.text_embed_dropout(aspect_embed)
         text_knowledge = self.graph_embed(feature)
         aspect_knowledge =self.graph_embed(aspect)
         text_knowledge=self.squeezeEmbedding(text_knowledge,text_len)
         aspect_knowledge=self.squeezeEmbedding(aspect_knowledge,aspect_len)
-        text_out, (_, _) = self.text_lstm(text, text_len)
-        aspect_out, (_, _) = self.aspect_lstm(aspect_embed, aspect_len)
+        text_out, (_, _) = self.text_lstm(text, text_len) #torch.Size([64, 65, 600])
+        aspect_out, (_, _) = self.aspect_lstm(aspect_embed, aspect_len) #torch.Size([64, 5, 600])
 
         #####    syntactic_level   ######
         seq_len = text_out.shape[1]
-        adj = adj[:, :seq_len, :seq_len]
-        x = F.relu(self.gc1(text_out, adj))
-        x = F.relu(self.gc2(x, adj))
-        x = self.location_feature(x, mask)
-        alpha_mat = torch.matmul(x, text_out.transpose(1, 2))
-        alpha = F.softmax(alpha_mat.sum(1, keepdim=True), dim=2)
-        x = torch.matmul(alpha, text_out).squeeze(1)
+        adj = adj[:, :seq_len, :seq_len] #torch.Size([64, 65, 65])
+        x = F.relu(self.gc1(text_out, adj)) #torch.Size([64, 65, 600])
+        # x = x+text_out
+        x = F.relu(self.gc2(x, adj)) #torch.Size([64, 65, 600])
+        x = self.location_feature(x, mask) #torch.Size([64, 65, 600])
+        alpha_mat = torch.matmul(x, text_out.transpose(1, 2)) #torch.Size([64, 65, 65])
+        alpha = F.softmax(alpha_mat.sum(1, keepdim=True), dim=2) #torch.Size([64, 1, 65])
+        x = torch.matmul(alpha, text_out).squeeze(1) #torch.Size([64, 600])
         if self.args.ds_name in ['14semeval_rest','Twitter']:
             x=x
         else:
-            x=F.relu(x)
+            x=F.relu(x) #torch.Size([64, 600])
         #####    syntactic_level   ######
 
         #####    context_level   ######
-        self_socre=torch.bmm(text_out,text_out.transpose(1,2))
-        self_socre=F.softmax(self_socre,dim=1)
-        text_att=torch.bmm(self_socre,text_out)
-        score=torch.bmm(aspect_out,text_out.transpose(1,2))
-        score=F.softmax(score, dim=1)
-        y=torch.bmm(score,text_att).squeeze(1)
+        self_socre=torch.bmm(text_out,text_out.transpose(1,2)) #torch.Size([64, 65, 65])
+        self_socre=F.softmax(self_socre,dim=1) #torch.Size([64, 65, 65])
+        text_att=torch.bmm(self_socre,text_out) #torch.Size([64, 65, 600])
+        score=torch.bmm(aspect_out,text_out.transpose(1,2)) #torch.Size([64, 5, 65])
+        score=F.softmax(score, dim=1) #torch.Size([64, 5, 65])
+        y=torch.bmm(score,text_att).squeeze(1) #torch.Size([64, 5, 600])
         if self.args.ds_name in ['14semeval_rest','Twitter']:
+            if y.shape[1]==600:
+                y = y.unsqueeze(1)
             y=F.max_pool1d(y.transpose(1,2),y.shape[1]).squeeze(2)
         else:
-            y=F.relu(F.max_pool1d(y.transpose(1,2),y.shape[1]).squeeze(2))
+            y=F.relu(F.max_pool1d(y.transpose(1,2),y.shape[1]).squeeze(2)) #torch.Size([64, 600])
         #####    context_level   ######
 
         #####    knowledge_level  ######
-        text_knowledge=torch.cat((text_knowledge,text_out),dim=-1)
+        text_knowledge=torch.cat((text_knowledge,text_out),dim=-1) #torch.Size([64, 65, 800])
         aspect_knowledge=torch.cat((aspect_knowledge,aspect_out),dim=-1)
         knowledge_score=torch.bmm(aspect_knowledge,text_knowledge.transpose(1,2))
         knowledge_score=F.softmax(knowledge_score, dim=1)
@@ -124,6 +127,7 @@ class KGNN(nn.Module):
         out_xz=torch.cat((x,z),dim=-1)
         out_yz=torch.cat((y,z),dim=-1)
         out_xy=torch.cat((x,y),dim=-1)
+        # print(out_xz.shape)
         output_xz=self.fc(out_xz)
         output_yz=self.fc2(out_yz)
         output_xy=self.fc3(out_xy)
@@ -238,7 +242,7 @@ class KGNN2(nn.Module):
         # return output, x, y, z
         return output
 
-    class KGNN_BERT(nn.Module):
+class KGNN_BERT(nn.Module):
     def __init__(self, bert, args):
         super(KGNN_BERT, self).__init__()
         self.args = args

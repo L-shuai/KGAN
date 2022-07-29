@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 import argparse
 import time
+
+import numpy
+
 from model.ATAE_LSTM import ATAE_LSTM, ATAE_LSTM_Bert
 from model.GCAE import GCAE,  GCAE_Bert
 from model.RGAT import RGAT
@@ -18,14 +21,28 @@ import math
 from sklearn import metrics
 import warnings
 import torch
+import requests
+import json
+# wxpusher
+headers = {'content-type': "application/json"}
+body = {
+  "appToken":"AT_ovoKNeFYClICWUKHnbF3BhYLkflxjy77",
+  "content":"acc=",
+  "summary":"KGNN",
+  "contentType":1,
+  "topicIds":[],
+  "uids":["UID_YicrCnEFRs6teHjQXis8EQ9nVoY3"]
+}
+
+
 warnings.filterwarnings('ignore')
 
 os.environ['CUDA_VISIBLE_DEVICES'] = "0"   #"0,1,2,3"
-seed = 14
-np.random.seed(seed)
-random.seed(seed)
-torch.manual_seed(seed)
-torch.cuda.manual_seed(seed)
+# seed = 14
+# np.random.seed(seed)
+# random.seed(seed)
+# torch.manual_seed(seed)
+# torch.cuda.manual_seed(seed)
 
 
 def _reset_params(model):
@@ -78,10 +95,12 @@ def train(args,times=0):
     train_time = []
     result_store_test = [[], []]
     if args.model in ['ASGCN','KGNN', 'RGAT']:
-        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate)
+        # optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate)
+        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate,weight_decay=args.l2reg)
     else:
         optimizer = torch.optim.Adagrad(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate)
 
+    ExpLR = torch.optim.lr_scheduler.ExponentialLR(optimizer,gamma=0.98)
     save_acc,save_f1=0.0,0.0
     model.train()
     for i in range(1, args.n_epoch + 1):
@@ -146,6 +165,7 @@ def train(args,times=0):
                 print(
                     '\r - loss: {:.6f} f1:{:.4f} acc: {:.4f}%({}/{})'.format(loss.item(), f1, accuracy, corrects,
                                                                              train_y.shape[0]))
+        ExpLR.step()
         test_acc, test_f1 = max_acc, max_f1
         end = time.time()
         train_time.append(end - beg)
@@ -414,22 +434,32 @@ if __name__ == '__main__':
     dataset_name='Rest14'
 
     parser = argparse.ArgumentParser(description='KGNN settings')
-    parser.add_argument("-ds_name", type=str, default="14semeval_rest" if dataset_name == 'Rest14' else "14semeval_laptop", help="dataset name")    ##14semeval_rest, 14semeval_laptop
+    # parser.add_argument("-ds_name", type=str, default="14semeval_rest" if dataset_name == 'Rest14' else "14semeval_laptop", help="dataset name")    ##14semeval_rest, 14semeval_laptop
+    parser.add_argument("-ds_name", type=str, default="14semeval_laptop" if dataset_name == 'Rest14' else "14semeval_laptop", help="dataset name")    ##14semeval_rest, 14semeval_laptop
     parser.add_argument("-bs", type=int, default=64 if dataset_name == 'Rest14' else 32, help="batch size, 64 for rest, 32 for laptop")
     parser.add_argument("-dropout_rate", type=float, default=0.5, help="dropout rate for sentimental features")
     parser.add_argument("-learning_rate", type=float, default=0.001, help="learning rate for sentimental features")
+    parser.add_argument("-l2reg", type=float, default=0.00001)
     parser.add_argument("-n_epoch", type=int, default=20, help="number of training epoch")
     parser.add_argument('-model', type=str, default="KGNN", help="model name")
     parser.add_argument("-dim_w", type=int, default=300, help="dimension of word embeddings")
-    parser.add_argument("-dim_k", type=int, default=200 if dataset_name == 'Rest14' else 400,
+    parser.add_argument("-dim_k", type=int, default=400,
                         help="dimension of knowledge graph embeddings, 400 for laptop, 200 for rest")
-    parser.add_argument("-is_test", type=int, default=1, help="test the model: 1 for test")
+    parser.add_argument("-is_test", type=int, default=0, help="test the model: 1 for test")
     parser.add_argument("-is_bert", type=int, default=0, help="glove-based model: 1 for bert")
+    parser.add_argument("-seed", type=int, default=39)
 
     args = parser.parse_args()
+    # acc, f1 = [], []
+    # train_time = []
 
-    acc, f1 = [], []
-    train_time = []
+    if args.seed is not None:
+        random.seed(args.seed)
+        numpy.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed(args.seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
     if args.is_test == 1:
         if dataset_name == 'Rest14':
@@ -439,21 +469,35 @@ if __name__ == '__main__':
         test_acc, test_f1 = inference(args, test_path)
         print("Test : acc: {} f1: {}".format(test_acc, test_f1))
     else:
-        for i in range(5):
-            if args.is_bert == 1:
-                a_acc, a_f1, a_time = train_bert(args,  is_bert=True)
-            else:
-                a_acc, a_f1, a_time = train(args, times=i)
-            acc.append(a_acc)
-            f1.append(a_f1)
-            train_time.append(a_time)
+        for s in range(10,20):
+            dropout = 0.2
+            for d in range(0,5):
+                dropout+=0.1
+                args.seed = s
+                args.dropout_rate=round(dropout,1)
+                acc, f1 = [], []
+                train_time = []
+                for i in range(5):
+                    if args.is_bert == 1:
+                        a_acc, a_f1, a_time = train_bert(args,  is_bert=True)
+                    else:
+                        a_acc, a_f1, a_time = train(args, times=i)
+                    acc.append(a_acc)
+                    f1.append(a_f1)
+                    train_time.append(a_time)
 
-        best_acc = max(acc)
-        best_f1 = max(f1)
-        avg_acc = sum(acc) / len(acc)
-        avg_f1 = sum(f1) / len(f1)
-        best_time = min(train_time)
-        avg_time = sum(train_time) / len(train_time)
-        print('The results of {} : '.format(args.ds_name), '\n',
-              'best_acc: {}  best_f1: {} min_time: {}'.format(best_acc, best_f1, best_time), '\n',
-              'avg_acc: {}  avg_f1: {} avg_time: {}'.format(avg_acc, avg_f1, avg_time))
+                best_acc = max(acc)
+                best_f1 = max(f1)
+                avg_acc = sum(acc) / len(acc)
+                avg_f1 = sum(f1) / len(f1)
+                best_time = min(train_time)
+                avg_time = sum(train_time) / len(train_time)
+                print('The results of {} : '.format(args.ds_name), '\n',
+                      'best_acc: {}  best_f1: {} min_time: {}'.format(best_acc, best_f1, best_time), '\n',
+                      'avg_acc: {}  avg_f1: {} avg_time: {}'.format(avg_acc, avg_f1, avg_time))
+
+                result = 'The results of {} : '.format(args.ds_name)+'\n'+'best_acc: {}  best_f1: {} min_time: {}'.format(best_acc, best_f1, best_time)+'\n'+\
+                         'avg_acc: {}  avg_f1: {} avg_time: {}'.format(avg_acc, avg_f1, avg_time)
+                body['content'] = str(args) + "\n" + 'result:' + result
+                # send WxPusher
+                ret = requests.post('http://wxpusher.zjiecode.com/api/send/message', data=json.dumps(body), headers=headers)
